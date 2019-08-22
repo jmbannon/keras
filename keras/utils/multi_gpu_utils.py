@@ -195,7 +195,12 @@ def multi_gpu_model(model, gpus=None, cpu_merge=True, cpu_relocation=False):
         size = K.concatenate([size, input_shape], axis=0)
         stride = K.concatenate([step, input_shape * 0], axis=0)
         start = stride * i
-        return K.slice(data, start, size)
+        if K.is_sparse(data):
+            casted_start = tf.cast(start, dtype=tf.int64)
+            casted_size = tf.cast(size, dtype=tf.int64)
+            return tf.sparse_slice(data, casted_start, casted_size)
+        else:
+            return K.slice(data, start, size)
 
     # Relocate the model definition under CPU device scope if needed
     if cpu_relocation:
@@ -214,16 +219,24 @@ def multi_gpu_model(model, gpus=None, cpu_merge=True, cpu_relocation=False):
                 inputs = []
                 # Retrieve a slice of the input.
                 for x in model.inputs:
-                    # In-place input splitting which is not only
-                    # 5% ~ 12% faster but also less GPU memory
-                    # duplication.
-                    with tf.device(x.device):
+                    if K.is_sparse(x):
                         input_shape = K.int_shape(x)[1:]
                         slice_i = Lambda(get_slice,
                                          output_shape=input_shape,
                                          arguments={'i': i,
                                                     'parts': num_gpus})(x)
-                        inputs.append(slice_i)
+
+                    else:
+                        # In-place input splitting which is not only
+                        # 5% ~ 12% faster but also less GPU memory
+                        # duplication.
+                        with tf.device(x.device):
+                            input_shape = K.int_shape(x)[1:]
+                            slice_i = Lambda(get_slice,
+                                             output_shape=input_shape,
+                                             arguments={'i': i,
+                                                        'parts': num_gpus})(x)
+                    inputs.append(slice_i)
 
                 # Apply model on slice
                 # (creating a model replica on the target device).
